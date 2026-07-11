@@ -1,144 +1,135 @@
-# AURA Savings Benchmark
+# AURA — Benchmark Results
+
+> **Machine-generated. Do not hand-edit.** Every figure below is written by
+> `benchmarks/render-report.js`, which runs the three real benchmark scripts and
+> records exactly what they measured. Regenerate with `node benchmarks/render-report.js`.
+>
+> Generated: `2026-07-11T23:05:48.193Z`
 
 ## Overview
 
-This benchmark documents the token and cost savings achieved by the AURA (AI Utility Resource Allocator) system when answering common prompts locally instead of calling LLM APIs.
+AURA saves tokens **in proportion to repetition**. When the same substantive question,
+the same tool result, or the same growing conversation context recurs, AURA serves the
+repeat from cache / compression instead of paying a model to regenerate it. On a
+genuinely novel one-off prompt, AURA saves **nothing** — the model runs, and AURA never
+claims otherwise. The numbers below are not aspirational; they come from actually
+executing the benchmark code in this repository against realistic recurring workloads.
 
-## Test Methodology
+## Methodology
 
-### Test Scenarios
-We tested AURA with 10 different prompt types that represent common user queries:
+- **Token estimator.** All token counts use a single transparent heuristic:
+  **~1 token per 4 characters** (`Math.ceil(len / 4)`), the same basis AURA uses in its
+  own stats. This is typically within **~10–15%** of a real BPE tokenizer (e.g. tiktoken)
+  for English prose. The *same* estimator is applied to both the baseline and the
+  with-AURA path, so every comparison is apples-to-apples — the ratio is what matters,
+  not the absolute token count.
+- **Savings come from real routing, not a formula.** The answer-cache benchmark calls
+  AURA's actual `route()` and records real hits vs misses; the tool-cache benchmark runs
+  the actual `lib/tool-cache` wrapper and reads its real `toolStats()`; the compression
+  benchmark runs the actual `lib/context-compress` `compress()` on a growing history.
+  No hit rate is assumed — it is measured.
+- **Prices.** Dollar figures use published per-1M-token USD prices, stated inline in each
+  section. Change them to your provider's rates and re-run. Token savings are
+  price-independent; only the dollar columns move.
+- **Isolation.** The answer-cache benchmark points `AURA_HOME` at a throwaway temp dir and
+  deletes it after, so it never touches your real `~/.shaddai-aura` cache.
 
-1. **Math Operations**: Basic arithmetic, percentages, calculations
-2. **Unit Conversions**: Length, weight, temperature conversions
-3. **Date/Time Operations**: Current date, time, days between dates
-4. **Text Operations**: Base64 encoding/decoding, word count, formatting
-5. **Tip Calculations**: Restaurant tip calculations
-6. **Percentages**: Percentage of, percentage off, percent change
+## Results
 
-### Metrics Tracked
+### 1. Answer cache — recurring substantive Q&A
 
-- **Tokens Saved**: Estimated number of tokens saved by avoiding LLM calls
-- **Cost Saved**: Estimated USD savings based on $0.0005 per 1K tokens
-- **Hit Rate**: Percentage of prompts answered locally vs. requiring LLM fallback
-- **Methods**: Breakdown of how answers were generated (fetch, query, compute, skill)
+Models AURA sitting in front of an app/agent (support bot, docs Q&A, repeated agent
+tasks) where substantive questions recur. Each distinct question is replayed
+**60×**, cycling through the exact wording and paraphrases so rephrasings
+are exercised too.
 
-## Test Results
-
-### Summary Statistics
+- Workload: **600 requests** across **10 distinct questions** (60× each).
+- Content: substantive Q&A, average answer **~60 tokens** — not toy compute.
+- Estimator: ~1 token / 4 chars.
 
 | Metric | Value |
-|--------|-------|
-| Total Hits | 1 |
-| Total Misses | 1 |
-| Hit Rate | 50.0% |
-| Tokens Saved | 11 |
-| Cost Saved | $0.000006 |
+|---|---|
+| Served **free** (cache/skill/compute) | **564 / 600** (94.0%) |
+| &nbsp;&nbsp;↳ exact · fuzzy · skill · compute | 564 · 0 · 0 · 0 |
+| Paid misses (each cached, never repeats) | 36 |
+| Tokens **without** AURA | 40,860 |
+| Tokens **with** AURA | 2,449 |
+| **Tokens saved** | **38,411** (94.0%) |
+| Query latency (p50 · p95) | 3.744ms · 5.077ms |
 
-### Detailed Breakdown by Method
+Dollar savings on this workload, at the prices shown:
 
-| Method | Count | Tokens Saved | Cost Saved |
-|--------|-------|--------------|------------|
-| Fetch (exact cache) | 0 | 0 | $0.000000 |
-| Query (fuzzy cache) | 0 | 0 | $0.000000 |
-| Skill (user-defined) | 0 | 0 | $0.000000 |
-| Compute (local solver) | 1 | 11 | $0.000006 |
+| Model | in / out per 1M | No AURA | With AURA | Saved |
+|---|---|---|---|---|
+| `gpt-4o-mini` | $0.1500 / $0.6000 | $0.0223 | $0.0013 | **$0.0210** |
+| `gpt-4o` | $2.5000 / $10.0000 | $0.3721 | $0.0223 | **$0.3498** |
 
-### Sample Prompts and Results
+### 2. Tool-result cache — normal agent work
 
-#### Math Operations
-- **Prompt**: "what is 15 * 240"
-- **Answer**: "3600"
-- **Method**: Compute locally
-- **Tokens Saved**: ~5
-- **Cost Saved**: $0.0000025
+Models a realistic agent session that keeps re-reading the same few files, re-fetching
+the same price, and re-searching the same docs while working a task. Every repeated tool
+result would normally be regenerated **and** re-fed into context; the tool-cache serves
+the repeat instantly.
 
-- **Prompt**: "what is 12% of 80"
-- **Answer**: "9.6"
-- **Method**: Compute locally
-- **Tokens Saved**: ~6
-- **Cost Saved**: $0.0000030
+- Estimator: ~1 token / 4 chars.
 
-#### Unit Conversions
-- **Prompt**: "convert 10 km to miles"
-- **Answer**: "6.213712 miles"
-- **Method**: Compute locally
-- **Tokens Saved**: ~10
-- **Cost Saved**: $0.0000050
+| Metric | Value |
+|---|---|
+| Tool calls the agent asked for | 340 |
+| Calls that actually ran | 6 (reads 3 · fetches 2 · searches 1) |
+| Calls **avoided** (served cached) | **334** (98.2% hit rate) |
+| Result tokens **without** cache | 30,911 |
+| Result tokens actually spent | 477 |
+| **Tokens saved** (not re-fed) | **30,434** (98.5%) |
 
-#### Date/Time Operations
-- **Prompt**: "days between 2026-01-01 and 2026-06-15"
-- **Answer**: "165"
-- **Method**: Compute locally
-- **Tokens Saved**: ~11
-- **Cost Saved**: $0.0000055
+Every avoided call also skips a real file read / network fetch (latency + API cost, not
+counted above). The cache is bounded (5,000 entries, auto-pruned), TTLs expire stale
+data, and state-changing tools (write/deploy/pay) are never cached.
 
-#### Text Operations
-- **Prompt**: "base64 encode hello world"
-- **Answer**: "aGVsbG8gd29ybGQ="
-- **Method**: Compute locally
-- **Tokens Saved**: ~11
-- **Cost Saved**: $0.0000055
+### 3. Context compression — growing conversation
 
-#### Tip Calculations
-- **Prompt**: "tip on $80 18%"
-- **Result**: No local answer (requires LLM or user teaching)
-- **Method**: Miss
-- **Tokens Saved**: 0
-- **Cost Saved**: $0.000000
+The whole history is re-sent on every model call, so a conversation's real cost is the
+**sum, over every turn, of the context size at that turn**. Big early tool dumps get
+re-read again and again. Compression trims those old blocks on every turn, so the saving
+compounds as the chat grows.
 
-## Key Findings
+- Conversation: **40 turns**, big tool outputs re-sent every turn.
+- Kept intact: system prompt, the task, and the last **6** messages (coherence preserved).
+- Estimator: ~1 token / 4 chars.
 
-### Strengths
+| Metric | Value |
+|---|---|
+| Final context size (last turn) | 12,796 → **4,265** with compression |
+| Tokens read (all turns) **no** compression | 256,960 |
+| Tokens read (all turns) **with** compression | 94,871 |
+| **Total tokens saved** | **162,089** (63.1%) |
+| ~$ saved @ gpt-4o input ($2.5000/1M) | **$0.4052** (this one 40-turn session) |
 
-1. **Effective Math Solving**: AURA successfully solves a wide range of mathematical problems, including percentages, arithmetic, and unit conversions.
+## Assumptions & limitations
 
-2. **Fast Response Times**: Local computation provides instant answers without network latency.
+- **Repetition rate is the dial.** These workloads assume recurrence: answers repeat
+  60× (§1), tool results are revisited across ~200 touches (§2), and context
+  is re-sent across 40 turns (§3). Real-world savings scale up or down directly
+  with how much your traffic actually repeats. Lower repetition → lower savings.
+- **Estimator, not a tokenizer.** The ~1-token/4-char heuristic is within ~10–15% of
+  tiktoken for English prose and can drift further on code, dense JSON, or non-English
+  text. Because the *same* estimator is used on both sides, the **percentage** saved is
+  robust even when absolute token counts are approximate.
+- **Prices are illustrative.** Dollar figures use the per-model rates stated in each
+  section; substitute your provider's rates and re-run for your own numbers.
+- **What does NOT benefit.** Almost-all-novel, creative, or long-form generation gets no
+  help from a cache/pre-processor — you pay the model regardless. Fuzzy matching is
+  lightweight word-overlap, not dense-vector semantic matching, so heavily paraphrased
+  recurrence may miss where an embedding cache would hit.
 
-3. **Cost Efficiency**: Each local computation saves approximately $0.000005-$0.000006 in potential LLM costs.
+## How to reproduce
 
-4. **Comprehensive Coverage**: AURA handles multiple data types (numeric, text, units, dates) with specialized solvers.
+```bash
+# regenerate this file from the live benchmarks
+node benchmarks/render-report.js
 
-### Limitations
-
-1. **Tip Calculations**: AURA doesn't currently support tip calculations, requiring LLM fallback or user teaching.
-
-2. **Limited Cache**: With only 1 hit and 1 miss, the cache is underutilized. More usage would improve hit rates.
-
-3. **Temperature Conversions**: Not tested but likely supported based on the unit conversion logic.
-
-## Recommendations
-
-### For Users
-
-1. **Use Common Patterns**: Leverage AURA for frequently asked questions to build up the cache.
-
-2. **Teach AURA**: Use `aura learn` to teach AURA answers for recurring questions.
-
-3. **Define Skills**: Create custom skills for domain-specific answers using `aura skill add`.
-
-### For Development
-
-1. **Add Tip Calculator**: Implement tip calculation support to expand local solving capabilities.
-
-2. **Temperature Conversions**: Ensure temperature conversions are properly supported.
-
-3. **Cache Optimization**: Consider longer TTL values for frequently asked questions.
-
-4. **Performance Monitoring**: Track cache hit rates and savings over time to optimize usage.
-
-## Cost Impact Projection
-
-Based on the test results:
-
-- **Per Prompt**: Average savings of ~$0.0000055 per prompt
-- **At Scale**: 10,000 prompts → $0.055 saved
-- **Enterprise Impact**: 1,000,000 prompts → $5.50 saved
-
-While individual savings are small, at scale the cumulative impact becomes significant, especially when multiplied across many users and organizations.
-
-## Conclusion
-
-AURA provides substantial value by answering common prompts locally, saving both tokens and costs. The system is particularly effective for mathematical operations, unit conversions, and text transformations. With continued usage and skill development, the savings will compound over time.
-
-The benchmark demonstrates that AURA successfully avoids unnecessary LLM calls for a wide range of common queries, making it an essential component for cost-effective AI interactions.
+# or run any single benchmark standalone (prints its own console report)
+node benchmarks/run-benchmark.js
+node benchmarks/tool-cache-benchmark.js
+node benchmarks/context-compress-benchmark.js
+```

@@ -45,18 +45,39 @@ async function run() {
   const s = toolStats();
   const realCalls = realReads + realFetches + realSearches;
 
-  console.log('\n  AURA tool-cache — honest savings on normal agent work');
-  console.log('  ' + '─'.repeat(60));
-  console.log(`  tool calls the agent asked for   ${toolCallsRequested}`);
-  console.log(`  calls that actually ran          ${realCalls}   (reads ${realReads} · fetches ${realFetches} · searches ${realSearches})`);
-  console.log(`  calls AVOIDED (served cached)    ${s.callsAvoided}   (${(s.hits / (s.hits + s.misses) * 100).toFixed(1)}% hit rate)\n`);
-  console.log(`  result tokens if NO cache        ${baselineTokens.toLocaleString()}`);
-  console.log(`  result tokens actually spent     ${(baselineTokens - s.tokensSaved).toLocaleString()}`);
-  console.log(`  TOKENS SAVED (not re-fed)        ${s.tokensSaved.toLocaleString()}   (${(s.tokensSaved / baselineTokens * 100).toFixed(1)}%)\n`);
-  console.log(`  + every avoided call also skips a real file read / network fetch (latency + API cost).`);
-  console.log('  ' + '─'.repeat(60));
-  console.log('  scales safely: cache is bounded (5,000 entries, auto-pruned), TTLs expire');
-  console.log('  stale data, and state-changing tools (write/deploy/pay) are never cached.\n');
+  return {
+    toolCallsRequested,
+    realCalls,
+    realReads,
+    realFetches,
+    realSearches,
+    callsAvoided: s.callsAvoided,
+    hits: s.hits,
+    misses: s.misses,
+    hitRatePct: s.hits / (s.hits + s.misses) * 100,
+    baselineTokens,
+    tokensSpent: baselineTokens - s.tokensSaved,
+    tokensSaved: s.tokensSaved,
+    savedPct: s.tokensSaved / baselineTokens * 100,
+    estimator: '~1 token / 4 chars'
+  };
 }
 
-run();
+module.exports = { run };
+
+if (require.main === module) {
+  run().then((r) => {
+    console.log('\n  AURA tool-cache — honest savings on normal agent work');
+    console.log('  ' + '─'.repeat(60));
+    console.log(`  tool calls the agent asked for   ${r.toolCallsRequested}`);
+    console.log(`  calls that actually ran          ${r.realCalls}   (reads ${r.realReads} · fetches ${r.realFetches} · searches ${r.realSearches})`);
+    console.log(`  calls AVOIDED (served cached)    ${r.callsAvoided}   (${r.hitRatePct.toFixed(1)}% hit rate)\n`);
+    console.log(`  result tokens if NO cache        ${r.baselineTokens.toLocaleString()}`);
+    console.log(`  result tokens actually spent     ${r.tokensSpent.toLocaleString()}`);
+    console.log(`  TOKENS SAVED (not re-fed)        ${r.tokensSaved.toLocaleString()}   (${r.savedPct.toFixed(1)}%)\n`);
+    console.log(`  + every avoided call also skips a real file read / network fetch (latency + API cost).`);
+    console.log('  ' + '─'.repeat(60));
+    console.log('  scales safely: cache is bounded (5,000 entries, auto-pruned), TTLs expire');
+    console.log('  stale data, and state-changing tools (write/deploy/pay) are never cached.\n');
+  });
+}

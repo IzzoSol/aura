@@ -22,6 +22,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { validateSkill, isRegexSafe } = require('./lib/validate-skill');
+const searchIndex = require('./lib/search-index');
 
 // --------------------------------------------------------------------------- config
 const DATA_DIR    = process.env.AURA_HOME || path.join(os.homedir(), '.shaddai-aura');
@@ -87,6 +88,20 @@ function pruneCache(cache) {
     for (let i = 0; i < keys.length - MAX_ENTRIES; i++) delete cache[keys[i]];
   }
   return cache;
+}
+
+// buildFuzzyIndex(cache) — turn the loaded cache object { key: { prompt, answer } } into
+// the array shape search-index wants and build a fresh BM25 index. Rebuilt per route()
+// (correct-by-construction: always reflects the current cache, no stale-index bugs). Cheap
+// for small caches; the win is at scale, where search() scores only word-sharing candidates
+// instead of every entry.
+function buildFuzzyIndex(cache) {
+  const entries = [];
+  for (const k of Object.keys(cache)) {
+    const e = cache[k];
+    if (e && e.prompt !== undefined) entries.push({ key: k, prompt: e.prompt, answer: e.answer });
+  }
+  return searchIndex.buildIndex(entries);
 }
 
 // =========================================================================== COMPUTE
@@ -281,21 +296,23 @@ function route(prompt, opts = {}) {
       bumpStats((s) => { s.hits++; s.byMethod.fetch++; s.tokensSaved += saved; });
       return { hit: true, method: 'fetch', answer: exact.answer, savedTokensEst: saved };
     }
+    // FUZZY candidate lookup — was an O(N) cosineSim scan over the WHOLE cache (dies at
+    // 100k entries). Now: build an inverted BM25 index from the loaded cache and score
+    // ONLY the docs that share a content word with the prompt. We still confirm the top
+    // candidates with cosineSim + SIM_THRESHOLD so hit semantics (the `similarity` field,
+    // weak-match misses) are byte-for-byte preserved — BM25 just narrows the field.
     let best = null, bestSim = 0;
-    for (const k of Object.keys(cache)) {
-      const e = cache[k]; if (!e) continue;
+    const idx = buildFuzzyIndex(cache);
+    const candidates = searchIndex.search(idx, p, { limit: 10 });
+    for (const c of candidates) {
+      const e = cache[c.key]; if (!e) continue;
       const sim = cosineSim(p, e.prompt);
       if (sim > bestSim) { bestSim = sim; best = e; }
     }
-    if (best && bestSim >= SIM_THRESHOLD) {
-      const saved = estTokens(p) + estTokens(best.answer);
-      bumpStats((s) => { s.hits++; s.byMethod.query++; s.tokensSaved += saved; });
-      return { hit: true, method: 'query', answer: best.answer, savedTokensEst: saved, similarity: Math.round(bestSim * 1000) / 1000 };
-    }
-    // SKILLS: user-defined "compiled programs". Consulted AFTER cache (a real prior
-    // answer is the most authoritative + cheapest) but BEFORE compute, so a user's
-    // explicit skill can override a generic local computation. Only answer/template
-    // skills resolve here (synchronous, no I/O); adapter skills are handled by ask().
+    // COMPUTE is deterministic and must beat an APPROXIMATE fuzzy match: "what is 15% of
+    // 240" must compute 36, not fuzzy-hit a cached "15 * 240" -> 3600. So try compute
+    // BEFORE returning a query hit. (Exact cache stays authoritative above; skills sit
+    // between compute and fuzzy, still able to override a generic computation.)
     const skill = matchSkill(p);
     if (skill && !skill.adapter) {
       const saved = estTokens(p) + estTokens(skill.text);
@@ -309,6 +326,13 @@ function route(prompt, opts = {}) {
       bumpStats((s) => { s.hits++; s.byMethod.compute++; s.tokensSaved += saved; });
       try { recordAnswer(p, computed, opts); } catch (_) {}
       return { hit: true, method: 'compute', answer: computed, savedTokensEst: saved };
+    }
+    // FUZZY (query) hit — only after compute/skill declined, so an approximate match never
+    // shadows a deterministic answer, but a real prior paraphrase is still free.
+    if (best && bestSim >= SIM_THRESHOLD) {
+      const saved = estTokens(p) + estTokens(best.answer);
+      bumpStats((s) => { s.hits++; s.byMethod.query++; s.tokensSaved += saved; });
+      return { hit: true, method: 'query', answer: best.answer, savedTokensEst: saved, similarity: Math.round(bestSim * 1000) / 1000 };
     }
     bumpStats((s) => { s.misses++; });
     return { hit: false };

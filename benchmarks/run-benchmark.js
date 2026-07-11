@@ -144,32 +144,59 @@ function run() {
   const p50 = latencies[Math.floor(latencies.length * 0.5)];
   const p95 = latencies[Math.floor(latencies.length * 0.95)];
 
+  const hits = stream.length - byMethod.miss;
+  const avgAnswerTokens = Math.round(CORPUS.reduce((s, c) => s + estTokens(c.a), 0) / CORPUS.length);
+  const priceRows = {};
+  for (const m of Object.keys(PRICES)) priceRows[m] = dollars(m);
+
+  try { fs.rmSync(process.env.AURA_HOME, { recursive: true, force: true }); } catch (_) {}
+
+  return {
+    requests: stream.length,
+    distinctQuestions: CORPUS.length,
+    repeatsPer: REPEATS_PER,
+    avgAnswerTokens,
+    estimator: '~1 token / 4 chars',
+    hits,
+    hitRatePct: hits / stream.length * 100,
+    byMethod,
+    misses: byMethod.miss,
+    baselineTokens: baselineTotal,
+    auraTokens: auraTokensIn + auraTokensOut,
+    tokensSaved: savedTotal,
+    savedPct: savedTotal / baselineTotal * 100,
+    prices: PRICES,
+    dollars: priceRows,
+    latencyP50Ms: p50,
+    latencyP95Ms: p95
+  };
+}
+
+module.exports = { run };
+
+if (require.main === module) {
+  const r = run();
   console.log('\n  AURA — HONEST token-savings benchmark');
   console.log('  ' + '─'.repeat(60));
-  console.log(`  workload      ${stream.length} requests · ${CORPUS.length} distinct questions · ${REPEATS_PER}× each`);
-  console.log(`  content       substantive Q&A (avg answer ~${Math.round(CORPUS.reduce((s, c) => s + estTokens(c.a), 0) / CORPUS.length)} tokens) — NOT toy compute`);
-  console.log(`  estimator     ~1 token / 4 chars (same basis as aura stats)\n`);
+  console.log(`  workload      ${r.requests} requests · ${r.distinctQuestions} distinct questions · ${r.repeatsPer}× each`);
+  console.log(`  content       substantive Q&A (avg answer ~${r.avgAnswerTokens} tokens) — NOT toy compute`);
+  console.log(`  estimator     ${r.estimator} (same basis as aura stats)\n`);
 
-  const hits = stream.length - byMethod.miss;
-  console.log(`  served FREE   ${hits}/${stream.length}  (${(hits / stream.length * 100).toFixed(1)}%)`);
-  console.log(`    exact ${byMethod.fetch} · fuzzy ${byMethod.query} · skill ${byMethod.skill} · compute ${byMethod.compute}`);
-  console.log(`  paid misses   ${byMethod.miss}  (each cached so it never repeats)\n`);
+  console.log(`  served FREE   ${r.hits}/${r.requests}  (${r.hitRatePct.toFixed(1)}%)`);
+  console.log(`    exact ${r.byMethod.fetch} · fuzzy ${r.byMethod.query} · skill ${r.byMethod.skill} · compute ${r.byMethod.compute}`);
+  console.log(`  paid misses   ${r.misses}  (each cached so it never repeats)\n`);
 
-  console.log(`  tokens if NO AURA   ${baselineTotal.toLocaleString()}`);
-  console.log(`  tokens WITH AURA    ${(auraTokensIn + auraTokensOut).toLocaleString()}`);
-  console.log(`  tokens SAVED        ${savedTotal.toLocaleString()}  (${(savedTotal / baselineTotal * 100).toFixed(1)}%)\n`);
+  console.log(`  tokens if NO AURA   ${r.baselineTokens.toLocaleString()}`);
+  console.log(`  tokens WITH AURA    ${r.auraTokens.toLocaleString()}`);
+  console.log(`  tokens SAVED        ${r.tokensSaved.toLocaleString()}  (${r.savedPct.toFixed(1)}%)\n`);
 
-  for (const m of Object.keys(PRICES)) {
-    const d = dollars(m);
+  for (const m of Object.keys(r.dollars)) {
+    const d = r.dollars[m];
     console.log(`  $ at ${m.padEnd(12)} no-aura $${d.base.toFixed(4)} → with-aura $${d.aura.toFixed(4)}  = saved $${d.saved.toFixed(4)}`);
   }
-  console.log(`\n  query latency  p50 ${p50.toFixed(3)}ms · p95 ${p95.toFixed(3)}ms`);
+  console.log(`\n  query latency  p50 ${r.latencyP50Ms.toFixed(3)}ms · p95 ${r.latencyP95Ms.toFixed(3)}ms`);
   console.log('  ' + '─'.repeat(60));
   console.log('  honest note: savings scale with REPETITION. High-repeat workloads');
   console.log('  (support, docs Q&A, agent tasks) save the most; novel one-off prompts');
   console.log('  save nothing — AURA never claims otherwise.\n');
-
-  try { fs.rmSync(process.env.AURA_HOME, { recursive: true, force: true }); } catch (_) {}
 }
-
-run();

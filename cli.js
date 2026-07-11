@@ -17,6 +17,7 @@ const A = require('./aura-core');
 const fs = require('fs');
 const { validateAll } = require('./lib/validate-skill');
 const LS = require('./lib/learn-sessions');
+const IN = require('./lib/ingest');
 
 const C = { g: '\x1b[32m', c: '\x1b[36m', y: '\x1b[33m', d: '\x1b[2m', r: '\x1b[31m', b: '\x1b[1m', x: '\x1b[0m' };
 const out = (s) => process.stdout.write(s + '\n');
@@ -36,6 +37,9 @@ ${C.b}USAGE${C.x}
   aura learn-sessions [--apply] [--dir <path>] [--min-repeat N]
                                                teach AURA from your Claude Code history
                                                (dry-run by default; --apply to save)
+  aura ingest <path> [--apply]                 load a .md/.txt file or a folder of docs
+                                               into AURA as facts (dry-run by default;
+                                               --apply to save)
   aura stats                                   show tokens/cost saved
   aura clear                                   wipe the cache
   aura where                                   show the cache location
@@ -120,6 +124,37 @@ async function main() {
     }
     out(`\n${C.g}✓ taught AURA:${C.x} ${facts} cached facts, ${madeSkills} skills` + (rejected ? ` ${C.d}(${rejected} skills rejected by validator)${C.x}` : ''));
     out(`${C.d}these prompts now answer free. check: aura stats${C.x}`);
+    return;
+  }
+
+  if (cmd === 'ingest') {
+    const apply = argv.includes('--apply');
+    // path = first non-flag arg after "ingest"
+    const target = argv.slice(1).find((a) => !a.startsWith('--'));
+    if (!target) { out(`${C.r}usage: aura ingest <path> [--apply]${C.x}`); process.exitCode = 1; return; }
+
+    out(`${C.b}AURA — ingesting docs${C.x}`);
+    out(`${C.d}reading ${target}${C.x}`);
+    const sources = IN.readSources(target);
+    if (!sources.length) { out(`${C.y}no .md/.txt docs found at ${target}${C.x}`); process.exitCode = 1; return; }
+    const plan = IN.planIngest(sources);
+    const s = plan.stats;
+
+    out(`  docs read       ${C.c}${sources.length}${C.x}   chunks scanned ${s.scanned}   empty skipped ${s.empty}   oversized ${s.tooLong}`);
+    out(`  ${C.r}secrets dropped ${s.secretsDropped}${C.x}   ${C.g}facts ${plan.facts.length}${C.x}`);
+
+    // show a few samples so the user can eyeball quality before applying
+    for (const f of plan.facts.slice(0, 4)) out(`    ${C.d}fact:${C.x} "${f.prompt.slice(0, 60)}" ${C.d}→${C.x} ${f.answer.slice(0, 50).replace(/\n/g, ' ')}`);
+
+    if (!apply) {
+      out(`\n${C.y}dry run — nothing saved.${C.x} re-run with ${C.b}--apply${C.x} to teach AURA.`);
+      return;
+    }
+
+    let facts = 0;
+    for (const f of plan.facts) { if (A.recordAnswer(f.prompt, f.answer)) facts++; }
+    out(`\n${C.g}✓ taught AURA:${C.x} ${facts} cached facts from ${sources.length} doc${sources.length === 1 ? '' : 's'}`);
+    out(`${C.d}these questions now answer free. check: aura stats${C.x}`);
     return;
   }
 

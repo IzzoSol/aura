@@ -23,7 +23,7 @@
     "SECURITY.md"
   ],
   "scripts": {
-    "test": "node aura-core.test.js && node validate-skill.test.js && node learn-sessions.test.js && node tool-cache.test.js && node context-compress.test.js && node mcp.test.js",
+    "test": "node aura-core.test.js && node validate-skill.test.js && node search-index.test.js && node learn-sessions.test.js && node ingest.test.js && node tool-cache.test.js && node context-compress.test.js && node mcp.test.js",
     "bench": "node benchmarks/run-benchmark.js && node benchmarks/tool-cache-benchmark.js && node benchmarks/context-compress-benchmark.js",
     "test:mcp": "node mcp.test.js",
     "mcp": "node mcp.js"

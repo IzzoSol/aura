@@ -48,17 +48,34 @@ function run() {
   const PRICE_IN = 2.50; // gpt-4o input $ / 1M tokens
   const dollarsSaved = (saved / 1e6) * PRICE_IN;
 
+  return {
+    turns: TURNS,
+    keepRecent: 6,
+    finalContextNoCompress: finalNo,
+    finalContextWithCompress: finalYes,
+    totalNoCompress,
+    totalWithCompress,
+    tokensSaved: saved,
+    savedPct: saved / totalNoCompress * 100,
+    priceInPerM: PRICE_IN,
+    dollarsSaved,
+    estimator: '~1 token / 4 chars'
+  };
+}
+
+module.exports = { run };
+
+if (require.main === module) {
+  const r = run();
   console.log('\n  AURA context-compression — honest savings over a growing conversation');
   console.log('  ' + '─'.repeat(64));
-  console.log(`  conversation           ${TURNS} turns, big tool outputs re-sent every turn`);
-  console.log(`  final context size     ${finalNo.toLocaleString()} tokens  →  ${finalYes.toLocaleString()} with compression (last turn)\n`);
-  console.log(`  tokens read (all turns) NO compression   ${totalNoCompress.toLocaleString()}`);
-  console.log(`  tokens read (all turns) WITH compression ${totalWithCompress.toLocaleString()}`);
-  console.log(`  TOTAL TOKENS SAVED                       ${saved.toLocaleString()}  (${(saved / totalNoCompress * 100).toFixed(1)}%)`);
-  console.log(`  ~$ saved @ gpt-4o input                  $${dollarsSaved.toFixed(4)}  (this one 40-turn session)\n`);
+  console.log(`  conversation           ${r.turns} turns, big tool outputs re-sent every turn`);
+  console.log(`  final context size     ${r.finalContextNoCompress.toLocaleString()} tokens  →  ${r.finalContextWithCompress.toLocaleString()} with compression (last turn)\n`);
+  console.log(`  tokens read (all turns) NO compression   ${r.totalNoCompress.toLocaleString()}`);
+  console.log(`  tokens read (all turns) WITH compression ${r.totalWithCompress.toLocaleString()}`);
+  console.log(`  TOTAL TOKENS SAVED                       ${r.tokensSaved.toLocaleString()}  (${r.savedPct.toFixed(1)}%)`);
+  console.log(`  ~$ saved @ gpt-4o input                  $${r.dollarsSaved.toFixed(4)}  (this one 40-turn session)\n`);
   console.log('  the saving compounds: it applies on EVERY turn, and grows as the chat grows.');
   console.log('  coherence kept: system prompt, the task, and the last 6 messages are never touched.');
   console.log('  ' + '─'.repeat(64) + '\n');
 }
-
-run();

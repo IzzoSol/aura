@@ -10,6 +10,8 @@
 //   or:  node mcp.js
 // ============================================================
 const aura = require('./aura-core');
+const { compress } = require('./lib/context-compress');
+const { toolStats } = require('./lib/tool-cache');
 let PKG = { version: '0.0.0' };
 try { PKG = require('./package.json'); } catch (_) {}
 
@@ -22,6 +24,10 @@ console.log = console.info = console.debug = function () {
 // Cap tool inputs so a client can't exhaust memory with a giant string.
 const MAX_PROMPT = 20000;
 const MAX_ANSWER = 200000;
+// Caps for aura_compress: bound the number of messages AND the size of each one,
+// so a malicious/huge conversation can't blow up memory before we even compress it.
+const MAX_MESSAGES = 2000;         // hard cap on how many messages we accept
+const MAX_MSG_CONTENT = 200000;    // per-message content clip (chars)
 function clip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) : s; }
 
 const TOOLS = [
@@ -57,6 +63,41 @@ const TOOLS = [
     name: 'aura_stats',
     description: 'Report how many tokens and dollars AURA has saved so far, and cache hit counts.',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'aura_compress',
+    description:
+      "Shrink a conversation history BEFORE re-sending it to the model, to save tokens on every turn. " +
+      'Deterministically dedups repeated blocks, truncates big old tool outputs, and (if maxTokens is set) drops the oldest ' +
+      'non-pinned messages — while NEVER touching system messages, the first user task, or the last few turns. ' +
+      'Returns the compressed messages plus stats (tokensBefore/After/saved). Call this on long histories before your next generation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        messages: {
+          type: 'array',
+          description: 'The conversation history to compress.',
+          items: {
+            type: 'object',
+            properties: {
+              role: { type: 'string', description: 'Message role (system/user/assistant/tool).' },
+              content: { type: 'string', description: 'Message content.' }
+            },
+            required: ['role', 'content']
+          }
+        },
+        keepRecent: { type: 'integer', description: 'How many trailing messages to keep fully intact (default 6).' },
+        maxTokens: { type: 'integer', description: 'Optional hard token budget; oldest non-pinned messages are dropped to fit.' }
+      },
+      required: ['messages']
+    }
+  },
+  {
+    name: 'aura_savings',
+    description:
+      'Combined AURA savings report: the answer-cache stats (prompts answered for free) PLUS the tool-cache stats ' +
+      '(repeated tool calls avoided and the tokens that saved). One JSON payload for a full picture of what AURA has saved.',
+    inputSchema: { type: 'object', properties: {} }
   }
 ];
 
@@ -79,6 +120,34 @@ async function callTool(name, args) {
   }
   if (name === 'aura_stats') {
     return textResult(aura.stats());
+  }
+  if (name === 'aura_compress') {
+    // Guard malformed input WITHOUT throwing — return isError instead.
+    if (!Array.isArray(args.messages)) {
+      return Object.assign(textResult({ error: 'messages must be an array of {role, content}' }), { isError: true });
+    }
+    // Cap count first, then clip each message's content — bound memory before compressing.
+    const raw = args.messages.slice(0, MAX_MESSAGES);
+    const safe = raw.map((m) => {
+      m = m || {};
+      const role = clip(m.role == null ? '' : m.role, 64);
+      // content may be a string or blocks; compress() handles both, but we clip the
+      // string form defensively. Non-string content is passed through (already bounded by count).
+      const content = typeof m.content === 'string' ? clip(m.content, MAX_MSG_CONTENT) : m.content;
+      return { role: role || 'user', content };
+    });
+    const opts = {};
+    if (Number.isInteger(args.keepRecent) && args.keepRecent >= 0) opts.keepRecent = args.keepRecent;
+    if (Number(args.maxTokens) > 0) opts.maxTokens = Number(args.maxTokens);
+    const result = compress(safe, opts);
+    return textResult({ messages: result.messages, stats: result.stats });
+  }
+  if (name === 'aura_savings') {
+    let answerCache = {};
+    try { answerCache = aura.stats(); } catch (_) { answerCache = { error: 'answer-cache stats unavailable' }; }
+    let toolCache = {};
+    try { toolCache = toolStats(); } catch (_) { toolCache = { error: 'tool-cache stats unavailable' }; }
+    return textResult({ answerCache, toolCache });
   }
   return Object.assign(textResult('Unknown tool: ' + name), { isError: true });
 }

@@ -182,4 +182,14 @@ test('skill: stats now track byMethod.skill', () => {
   assert.ok(s.byMethod.skill > 0);
 });
 
+// --- regression: deterministic compute must beat an approximate fuzzy match ---
+test('route: compute beats a fuzzy calc collision (15% of 240 -> 36, not cached 3600)', () => {
+  A.clearCache();
+  A.recordAnswer('what is 15 * 240', '3600'); // a DIFFERENT calc that shares "15"/"240"
+  const r = A.route('what is 15% of 240');
+  assert.strictEqual(r.hit, true);
+  assert.strictEqual(r.method, 'compute');
+  assert.strictEqual(r.answer, '36');
+});
+
 test.after(() => { try { fs.rmSync(process.env.AURA_HOME, { recursive: true, force: true }); } catch (_) {} });
