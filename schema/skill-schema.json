@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AURA Skill",
+  "description": "Public contract for an AURA skill. Validation is hand-written in lib/validate-skill.js (AURA stays zero-dependency), but this schema is the documented source of truth for the shape.",
+  "type": "object",
+  "required": ["name", "match", "action"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "match": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "regex": { "type": "boolean", "default": false },
+    "priority": { "type": "integer", "minimum": 0, "maximum": 1000, "default": 100 },
+    "description": { "type": "string", "maxLength": 1000 },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 40 },
+      "maxItems": 20,
+      "uniqueItems": true
+    },
+    "createdAt": { "type": "string" },
+    "action": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["answer", "template", "adapter", "compute", "chain"] },
+        "text": { "type": "string", "maxLength": 10000 },
+        "adapter": { "type": "string", "maxLength": 100 },
+        "args": { "type": "object", "additionalProperties": true },
+        "expr": { "type": "string", "maxLength": 500 },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "enum": ["answer", "template", "adapter", "compute"] },
+              "text": { "type": "string" },
+              "adapter": { "type": "string" },
+              "args": { "type": "object", "additionalProperties": true },
+              "expr": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "policy": {
+          "type": "object",
+          "properties": {
+            "maxCostUSD": { "type": "number", "minimum": 0, "default": 0 },
+            "requiresConfirm": { "type": "boolean", "default": false },
+            "allowedAdapters": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "maxLength": 100 },
+              "maxItems": 20,
+              "uniqueItems": true
+            },
+            "rateLimit": {
+              "type": "object",
+              "properties": {
+                "count": { "type": "integer", "minimum": 1, "maximum": 100000 },
+                "windowSec": { "type": "integer", "minimum": 1, "maximum": 86400 }
+              },
+              "required": ["count", "windowSec"],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

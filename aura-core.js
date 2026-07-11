@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { validateSkill, isRegexSafe } = require('./lib/validate-skill');
 
 // --------------------------------------------------------------------------- config
 const DATA_DIR    = process.env.AURA_HOME || path.join(os.homedir(), '.shaddai-aura');
@@ -367,9 +368,26 @@ function clearCache() { return writeJson(CACHE_FILE, {}); }
  * matchSkill(prompt) is SYNCHRONOUS and only resolves answer/template skills (used by
  * route()). Adapter skills are resolved by ask() because they do network I/O.
  */
+const MAX_SKILLS      = 2000;   // load-time cap (skills.json can be hand-edited)
+const MAX_MATCH_CHARS = 500;    // mirror the validator's match cap at load
+const MAX_TEXT_CHARS  = 10000;  // mirror the validator's answer/text cap at load
+
+// loadSkills — read + defensively sanitize the (possibly hand-edited) registry.
+// Anything that could hang or bloat matching is dropped here so it can never execute,
+// not just so it can't be added: over-cap count, oversized fields, and regexes that
+// fail the ReDoS screen. Well-formed keyword/answer skills are untouched.
 function loadSkills() {
   const s = readJson(SKILLS_FILE, []);
-  return Array.isArray(s) ? s : [];
+  if (!Array.isArray(s)) return [];
+  const capped = s.length > MAX_SKILLS ? s.slice(0, MAX_SKILLS) : s;
+  return capped.filter((sk) => {
+    if (!sk || typeof sk !== 'object') return false;
+    if (typeof sk.match === 'string' && sk.match.length > MAX_MATCH_CHARS) return false;
+    const a = sk.action;
+    if (a && typeof a.text === 'string' && a.text.length > MAX_TEXT_CHARS) return false;
+    if (!isRegexSafe(sk)) return false; // inert: a catastrophic regex never reaches p.match()
+    return true;
+  });
 }
 function saveSkills(arr) { return writeJson(SKILLS_FILE, Array.isArray(arr) ? arr : []); }
 
@@ -410,43 +428,82 @@ function fillTemplate(text, m) {
  * Adapter skills are reported via { name, action, adapter:true } so ask() can run them,
  * but route() will treat that as "no sync answer". Never throws.
  */
+// specificity(skill) — how "targeted" a skill's match is, used only as a tiebreak
+// when two skills share the same priority. More match words = more specific = wins.
+function specificity(skill) {
+  return String((skill && skill.match) || '').trim().split(/\s+/).filter(Boolean).length;
+}
+// Resolve a skill's effective priority for sorting. Honors any finite value in 0..1000
+// (including a numeric string like "999" from a hand-edited skills.json); otherwise the
+// documented default of 100. Never NaN, so the sort stays deterministic.
+function skillPriority(skill) {
+  const n = Number(skill && skill.priority);
+  return Number.isFinite(n) && n >= 0 && n <= 1000 ? n : 100;
+}
+
 function matchSkill(prompt) {
   try {
     const p = String(prompt || '');
     if (!p.trim()) return null;
-    for (const skill of loadSkills()) {
+    // Collect EVERY applicable skill, then apply conflict precedence rather than
+    // taking the first insertion-order match: explicit `priority` (higher wins),
+    // then keyword count / specificity, then original insertion order.
+    const candidates = [];
+    const skills = loadSkills();
+    for (let i = 0; i < skills.length; i++) {
+      const skill = skills[i];
       if (!skill || !skill.action || !skill.match) continue;
       const re = skillRegex(skill);
       let m = null, applies = false;
       if (re) { m = p.match(re); applies = !!m; }
       else { applies = keywordMatch(p, skill.match); }
       if (!applies) continue;
-      const a = skill.action;
-      if (a.type === 'answer' || a.type === 'template') {
-        return { name: skill.name, action: a, text: fillTemplate(a.text, m || []), match: m || null };
-      }
-      if (a.type === 'adapter') {
-        // network-bound — resolved by ask(), not route()
-        return { name: skill.name, action: a, adapter: true, match: m || null };
-      }
+      candidates.push({ skill, m, index: i });
+    }
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => {
+      const pa = skillPriority(a.skill), pb = skillPriority(b.skill);
+      if (pb !== pa) return pb - pa;                     // higher priority first
+      const sb = specificity(b.skill), sa = specificity(a.skill);
+      if (sb !== sa) return sb - sa;                     // more specific first
+      return a.index - b.index;                          // else insertion order
+    });
+    const { skill, m } = candidates[0];
+    const a = skill.action;
+    if (a.type === 'answer' || a.type === 'template') {
+      return { name: skill.name, action: a, text: fillTemplate(a.text, m || []), match: m || null };
+    }
+    if (a.type === 'adapter') {
+      // network-bound — resolved by ask(), not route()
+      return { name: skill.name, action: a, adapter: true, match: m || null };
     }
     return null;
   } catch (_) { return null; }
 }
 
+/**
+ * addSkill(skill) — validate then persist (replacing any existing skill of the same
+ * name). Returns true on save, or an { ok:false, errors } object when the skill is
+ * rejected by the validator so callers can surface why. A bare `false` means a write
+ * failure. Invalid skills are NEVER written to skills.json.
+ */
 function addSkill(skill) {
   try {
-    if (!skill || !skill.name || !skill.match || !skill.action || !skill.action.type) return false;
+    if (!skill || typeof skill !== 'object') return false;
     const name = String(skill.name);
-    const arr = loadSkills().filter((s) => s && s.name !== name); // replace existing by name
-    arr.push({
+    const candidate = {
       name,
       match: String(skill.match),
       regex: !!skill.regex,
+      priority: Number.isInteger(skill.priority) ? skill.priority : 100,
       action: skill.action,
       createdAt: new Date().toISOString()
-    });
-    return saveSkills(arr);
+    };
+    const others = loadSkills().filter((s) => s && String(s.name).toLowerCase() !== name.toLowerCase());
+    const { ok, errors } = validateSkill(candidate, others);
+    if (!ok) return { ok: false, errors };
+    others.push(candidate); // replace existing by name = keep others + this one
+    return saveSkills(others);
   } catch (_) { return false; }
 }
 function listSkills() { return loadSkills(); }
@@ -614,5 +671,7 @@ module.exports = {
   route, recordAnswer, stats, clearCache, ask, askLLM, compute, cosineSim, classifyTier, pickModel,
   // Stage 2 — saved-skills registry
   addSkill, listSkills, removeSkill, matchSkill, runAdapter, ADAPTERS,
+  // Phase 1 — schema validation
+  validateSkill,
   CACHE_FILE, SKILLS_FILE, DATA_DIR
 };

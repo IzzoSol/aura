@@ -15,12 +15,15 @@
     "cli.js",
     "mcp.js",
     "aura-core.js",
+    "lib/",
+    "schema/",
     "README.md",
+    "COMPARISON.md",
     "LICENSE",
     "SECURITY.md"
   ],
   "scripts": {
-    "test": "node aura-core.test.js && node mcp.test.js",
+    "test": "node aura-core.test.js && node validate-skill.test.js && node learn-sessions.test.js && node mcp.test.js",
     "test:mcp": "node mcp.test.js",
     "mcp": "node mcp.js"
   },

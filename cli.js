@@ -14,6 +14,9 @@
  */
 
 const A = require('./aura-core');
+const fs = require('fs');
+const { validateAll } = require('./lib/validate-skill');
+const LS = require('./lib/learn-sessions');
 
 const C = { g: '\x1b[32m', c: '\x1b[36m', y: '\x1b[33m', d: '\x1b[2m', r: '\x1b[31m', b: '\x1b[1m', x: '\x1b[0m' };
 const out = (s) => process.stdout.write(s + '\n');
@@ -24,10 +27,15 @@ function usage() {
 ${C.b}USAGE${C.x}
   aura ask "<prompt>" [--llm] [--model <id>]   answer it the cheapest way
   aura learn "<prompt>" "<answer>"             cache an answer for next time
-  aura skill add "<name>" --match "<pat>" --do "<answer>" [--regex]
+  aura skill add "<name>" --match "<pat>" --do "<answer>" [--regex] [--priority N]
                                                save a reusable skill (free forever)
   aura skill list                              list saved skills
   aura skill remove "<name>"                   delete a saved skill
+  aura skill validate <file.json>              validate skills in a JSON file (no save)
+  aura skill lint                              validate the installed skills.json
+  aura learn-sessions [--apply] [--dir <path>] [--min-repeat N]
+                                               teach AURA from your Claude Code history
+                                               (dry-run by default; --apply to save)
   aura stats                                   show tokens/cost saved
   aura clear                                   wipe the cache
   aura where                                   show the cache location
@@ -54,6 +62,19 @@ function fmtStats(s) {
   out(`  ${C.d}cache: ${s.cacheFile}${C.x}`);
 }
 
+function printLint(report, label) {
+  if (report.ok) {
+    out(`${C.g}✓ valid${C.x} — ${label}`);
+    return;
+  }
+  out(`${C.r}✗ invalid${C.x} — ${label}`);
+  for (const r of report.results) {
+    if (r.ok) { out(`  ${C.g}✓${C.x} ${r.name}`); continue; }
+    out(`  ${C.r}✗ ${r.name}${C.x}`);
+    for (const e of r.errors) out(`      ${C.r}•${C.x} ${e}`);
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
@@ -63,6 +84,44 @@ async function main() {
   if (cmd === 'stats') { fmtStats(A.stats()); return; }
   if (cmd === 'where') { out(A.CACHE_FILE); return; }
   if (cmd === 'clear') { A.clearCache(); out(`${C.g}cache cleared${C.x}`); return; }
+
+  if (cmd === 'learn-sessions') {
+    const apply = argv.includes('--apply');
+    const di = argv.indexOf('--dir');
+    const mri = argv.indexOf('--min-repeat');
+    const dir = di >= 0 && argv[di + 1] ? argv[di + 1] : LS.defaultTranscriptDir();
+    const minRepeat = mri >= 0 ? parseInt(argv[mri + 1], 10) || 3 : 3;
+
+    out(`${C.b}AURA — learning from your sessions${C.x}`);
+    out(`${C.d}scanning ${dir}${C.x}`);
+    const { files, pairs } = LS.collectPairs(dir);
+    if (!files.length) { out(`${C.y}no transcripts found under ${dir}${C.x}`); process.exitCode = 1; return; }
+    const plan = LS.planFromPairs(pairs, { minRepeat });
+    const s = plan.stats;
+
+    out(`  transcripts     ${C.c}${files.length}${C.x}   turns scanned ${s.scanned}   unique prompts ${s.uniquePrompts}`);
+    out(`  ${C.r}secrets dropped ${s.secretsDropped}${C.x}   volatile skipped ${s.volatileDropped}   low-quality ${s.lowQuality}`);
+    out(`  ${C.g}stable facts  ${plan.facts.length}${C.x}   ${C.g}recurring→skills ${plan.skills.length}${C.x} ${C.d}(seen ≥${minRepeat}×)${C.x}`);
+
+    // show a few samples so the user can eyeball quality before applying
+    for (const f of plan.facts.slice(0, 3)) out(`    ${C.d}fact:${C.x} "${f.prompt.slice(0, 60)}" ${C.d}→${C.x} ${f.answer.slice(0, 50).replace(/\n/g, ' ')}`);
+    for (const sk of plan.skills.slice(0, 3)) out(`    ${C.d}skill:${C.x} [${sk.match}] ${C.d}(${sk.count}×)${C.x}`);
+
+    if (!apply) {
+      out(`\n${C.y}dry run — nothing saved.${C.x} re-run with ${C.b}--apply${C.x} to teach AURA.`);
+      return;
+    }
+
+    let facts = 0, madeSkills = 0, rejected = 0;
+    for (const f of plan.facts) { if (A.recordAnswer(f.prompt, f.answer)) facts++; }
+    for (const sk of plan.skills) {
+      const res = A.addSkill({ name: sk.name, match: sk.match, action: sk.action });
+      if (res === true) madeSkills++; else rejected++;
+    }
+    out(`\n${C.g}✓ taught AURA:${C.x} ${facts} cached facts, ${madeSkills} skills` + (rejected ? ` ${C.d}(${rejected} skills rejected by validator)${C.x}` : ''));
+    out(`${C.d}these prompts now answer free. check: aura stats${C.x}`);
+    return;
+  }
 
   if (cmd === 'learn') {
     const q = argv[1], a = argv[2];
@@ -101,20 +160,52 @@ async function main() {
       const name = argv[2];
       const mi = argv.indexOf('--match');
       const di = argv.indexOf('--do');
+      const pi = argv.indexOf('--priority');
       const match = mi >= 0 ? argv[mi + 1] : null;
       const doText = di >= 0 ? argv[di + 1] : null;
       const isRegex = argv.includes('--regex');
+      const priority = pi >= 0 ? parseInt(argv[pi + 1], 10) : undefined;
       if (!name || name.startsWith('--') || !match || doText == null) {
-        out(`${C.r}usage: aura skill add "<name>" --match "<pattern>" --do "<answer>" [--regex]${C.x}`);
+        out(`${C.r}usage: aura skill add "<name>" --match "<pattern>" --do "<answer>" [--regex] [--priority N]${C.x}`);
         process.exitCode = 1; return;
       }
-      const ok = A.addSkill({ name, match, regex: isRegex, action: { type: 'answer', text: doText } });
-      if (ok) out(`${C.g}saved${C.x} skill "${name}" — prompts matching ${C.c}${match}${C.x} now answer free`);
-      else { out(`${C.r}could not save skill${C.x}`); process.exitCode = 1; }
+      const res = A.addSkill({ name, match, regex: isRegex, priority, action: { type: 'answer', text: doText } });
+      if (res === true) {
+        out(`${C.g}saved${C.x} skill "${name}" — prompts matching ${C.c}${match}${C.x} now answer free`);
+      } else if (res && res.ok === false) {
+        // rejected by the validator — show exactly why, don't persist
+        out(`${C.r}invalid skill — not saved:${C.x}`);
+        for (const e of res.errors) out(`  ${C.r}•${C.x} ${e}`);
+        process.exitCode = 1;
+      } else {
+        out(`${C.r}could not save skill (write failure)${C.x}`);
+        process.exitCode = 1;
+      }
       return;
     }
 
-    out(`${C.r}usage: aura skill <add|list|remove> ...${C.x}`);
+    if (sub === 'validate') {
+      const file = argv[2];
+      if (!file) { out(`${C.r}usage: aura skill validate <file.json>${C.x}`); process.exitCode = 1; return; }
+      let data;
+      try { data = JSON.parse(fs.readFileSync(file, 'utf8')); }
+      catch (e) { out(`${C.r}cannot read/parse ${file}: ${e.message}${C.x}`); process.exitCode = 1; return; }
+      const skills = Array.isArray(data) ? data : [data];
+      const report = validateAll(skills);
+      printLint(report, `${file} (${skills.length} skill${skills.length === 1 ? '' : 's'})`);
+      process.exitCode = report.ok ? 0 : 1;
+      return;
+    }
+
+    if (sub === 'lint') {
+      const skills = A.listSkills();
+      const report = validateAll(skills);
+      printLint(report, `installed skills.json (${skills.length} skill${skills.length === 1 ? '' : 's'})`);
+      process.exitCode = report.ok ? 0 : 1;
+      return;
+    }
+
+    out(`${C.r}usage: aura skill <add|list|remove|validate|lint> ...${C.x}`);
     process.exitCode = 1;
     return;
   }
