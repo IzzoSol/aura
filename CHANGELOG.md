@@ -3,6 +3,15 @@
 All notable changes to **shaddai-aura** (AURA). Format follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semver.
 
+## [0.6.1] — 2026-07-19
+
+### Added
+- **Native prompt caching** — `aura.optimize(request, { cache: true })` inserts provider
+  prompt-cache breakpoints (`cache_control: {type:'ephemeral'}`) on the stable prefix: the
+  distilled system prompt (always) and the tool array (only when not trimmed per turn, since a
+  changing subset would miss the cache). ~90% off the cached prefix after the first call.
+  OpenAI auto-caches prefixes, so it's a reported no-op there. See `report.cache`.
+
 ## [0.6.0] — 2026-07-19
 
 AURA graduates from a repeat-answer cache into a **deterministic, zero-dependency

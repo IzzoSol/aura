@@ -82,6 +82,12 @@ Or call them individually: `aura.selectTools`, `aura.distill`, `aura.compress`.
 `fit:false` means it squeezed as far as it safely could without touching the protected core
 (system, task, recent turns) — it never silently drops those to hit a number.
 
+**Native prompt caching:** pass `cache: true` and AURA marks the stable prefix cacheable
+(`cache_control: {type:'ephemeral'}` on the distilled system prompt) so the provider bills it
+at ~10% on every turn after the first. Tools are cached only when you're *not* trimming them
+per turn (a changing tool subset would miss the cache every call). OpenAI caches long prefixes
+automatically, so it's a no-op there — reported in `report.cache`.
+
 > **Capstone benchmark** (`npm run bench`) — a real 10-turn agent session, 40 tools, growing
 > history re-sent every call: **60% of total request tokens saved** (tool injection ~12.7k +
 > history compress ~10.5k + distill). `aura stats` shows the same split live, per surface.

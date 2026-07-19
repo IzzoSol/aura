@@ -85,6 +85,39 @@ test('optimize() distills an Anthropic block-array system prompt, preserving str
   assert.strictEqual(req.system[0].text, beforeText, 'original block NOT mutated');
 });
 
+test('optimize({cache:true}) marks the distilled Anthropic system prompt cacheable', () => {
+  const req = { system: SYSTEM, messages: history(), tools: TOOLS };
+  const { request, report } = A.optimize(req, { tools: { k: 2 }, cache: true });
+  assert.ok(Array.isArray(request.system), 'string system converted to block array for cache_control');
+  const last = request.system[request.system.length - 1];
+  assert.deepStrictEqual(last.cache_control, { type: 'ephemeral' }, 'cache breakpoint set');
+  assert.ok(last.text.length < SYSTEM.length, 'the cached block is the DISTILLED system');
+  assert.strictEqual(report.cache.system, true);
+  assert.strictEqual(req.system, SYSTEM, 'original request not mutated');
+});
+
+test('optimize({cache:true}) does NOT cache tools while they are being trimmed (would miss every turn)', () => {
+  const { request, report } = A.optimize({ system: SYSTEM, messages: history(), tools: TOOLS }, { tools: { k: 2 }, cache: true });
+  assert.ok(!request.tools.some((t) => t.cache_control), 'no cache_control on a per-turn tool subset');
+  assert.strictEqual(report.cache.tools, false);
+});
+
+test('optimize({cache:true, tools:false}) caches the stable (untrimmed) tool array', () => {
+  const { request, report } = A.optimize({ system: SYSTEM, messages: history(), tools: TOOLS }, { tools: false, cache: true });
+  const lastTool = request.tools[request.tools.length - 1];
+  assert.deepStrictEqual(lastTool.cache_control, { type: 'ephemeral' });
+  assert.strictEqual(report.cache.tools, true);
+  assert.ok(!TOOLS[TOOLS.length - 1].cache_control, 'original tool not mutated');
+});
+
+test('optimize() adds no cache breakpoints by default, and OpenAI shape is a graceful no-op', () => {
+  const plain = A.optimize({ system: SYSTEM, messages: history(), tools: TOOLS }, { tools: { k: 2 } });
+  assert.ok(!plain.report.cache, 'no cache report without cache:true');
+  const openai = A.optimize({ messages: [{ role: 'system', content: SYSTEM }, ...history()], tools: TOOLS }, { cache: true });
+  assert.strictEqual(openai.report.cache.system, false, 'OpenAI system-message shape: no block cache_control');
+  assert.ok(/automatic/i.test(openai.report.cache.note), 'notes OpenAI auto-caches prefixes');
+});
+
 test('optimize() respects per-surface disable flags', () => {
   const req = { system: SYSTEM, messages: history(), tools: TOOLS };
   const { request, report } = A.optimize(req, { tools: false, distill: false });

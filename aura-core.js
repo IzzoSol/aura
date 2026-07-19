@@ -501,6 +501,35 @@ function optimize(request, opts = {}) {
     saved += c.stats.saved || 0;
   }
 
+  // 4. CACHE — insert provider prompt-cache breakpoints on the STABLE prefix (opt-in via
+  //    opts.cache). The system prompt is identical every turn, so marking it cacheable saves
+  //    ~90% on it after the first call. Tools are cached ONLY when not being trimmed — a
+  //    per-turn tool subset changes the prefix and would miss the cache every turn. OpenAI
+  //    caches prefixes automatically, so for that shape this is a no-op beyond a note.
+  if (opts.cache) {
+    const cc = { type: 'ephemeral' };
+    const rep = { system: false, tools: false, note: '' };
+    if (typeof req.system === 'string' && req.system.trim()) {
+      req.system = [{ type: 'text', text: req.system, cache_control: cc }];
+      rep.system = true;
+    } else if (Array.isArray(req.system) && req.system.length) {
+      req.system = req.system.slice();
+      const li = req.system.length - 1;
+      req.system[li] = Object.assign({}, req.system[li], { cache_control: cc });
+      rep.system = true;
+    }
+    if (opts.tools === false && Array.isArray(req.tools) && req.tools.length) {
+      req.tools = req.tools.slice();
+      const li = req.tools.length - 1;
+      req.tools[li] = Object.assign({}, req.tools[li], { cache_control: cc });
+      rep.tools = true;
+    }
+    rep.note = rep.system
+      ? 'cache_control set on the stable system prefix' + (rep.tools ? ' + tools' : '')
+      : 'no block-shaped system to mark — OpenAI caches long prefixes automatically';
+    report.cache = rep;
+  }
+
   report.tokensSaved = Math.round(saved);
   // whole-request budget verdict — measured the same (content-based) way compress counts, so
   // `fit` is reliable: true means the returned request is guaranteed at/under maxTokens.
